@@ -1,14 +1,14 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[100]:
+# In[137]:
 
 
 from IPython.core.interactiveshell import InteractiveShell
 InteractiveShell.ast_node_interactivity = "all"
 
 
-# In[101]:
+# In[138]:
 
 
 import torch
@@ -27,7 +27,7 @@ device
 
 
 
-# In[102]:
+# In[139]:
 
 
 # Hyperparameters
@@ -39,7 +39,7 @@ train_split = train_split/(train_split + val_split)
 val_split = val_split/(train_split + val_split)
 
 
-# In[103]:
+# In[140]:
 
 
 with open('input.txt', 'r', encoding='utf-8') as f:
@@ -52,7 +52,7 @@ print(f'{" ".join(chars)}')
 print(vocab_size)
 
 
-# In[104]:
+# In[141]:
 
 
 stoi = {ch: i for i, ch in enumerate(chars)}
@@ -65,7 +65,7 @@ encode('aads')
 decode(encode('aads'))
 
 
-# In[105]:
+# In[142]:
 
 
 data = torch.tensor(encode(text), dtype=torch.long)
@@ -81,7 +81,7 @@ val.shape
 train.shape[0] + val.shape[0]
 
 
-# In[106]:
+# In[143]:
 
 
 def get_batch(data, batch_size=4, context_size=8):
@@ -98,7 +98,7 @@ x
 y
 
 
-# In[107]:
+# In[144]:
 
 
 import torch.nn as nn
@@ -150,6 +150,34 @@ class FeedForward(nn.Module):
   def forward(self, x):
     return self.net(x)
 
+class Block(nn.Module):
+  """A single block of the transformer"""
+  def __init__(self, context_size, n_embd):
+    super().__init__()
+
+    self.self_attention_heads = MultiHeadAttention(
+      4,
+      context_size,
+      n_embd,
+      n_embd//4
+    )
+    self.feed_forward_network = FeedForward(n_embd)
+
+  def forward(self, x):
+    x = self.self_attention_heads(x)
+    x = self.feed_forward_network(x)
+    return x
+
+class MultiLayer(nn.Module):
+
+  def __init__(self, n_layers, vocab_size, context_size=8, n_embd=32):
+    super().__init__()
+
+    self.layers = nn.Sequential(*[Block(context_size, n_embd) for _ in range(n_layers)])
+
+  def forward(self, x):
+    return self.layers(x)
+
 
 class BigramLM(nn.Module):
   def __init__(self, vocab_size, embed_dim=32, context_size=8):
@@ -162,6 +190,7 @@ class BigramLM(nn.Module):
     self.position_embedding_table = nn.Embedding(context_size, embed_dim)
     self.self_attention_heads = MultiHeadAttention(4, context_size, embed_dim, embed_dim//4)
     self.feed_forward_network = FeedForward(embed_dim)
+    # self.multi_layer_blocks = MultiLayer(4, vocab_size, context_size, embed_dim)
     self.lm_head = nn.Linear(embed_dim, vocab_size)
 
   def forward(self, idx, targets=None):
@@ -171,6 +200,7 @@ class BigramLM(nn.Module):
     positional_embedding = self.position_embedding_table(torch.arange(T, device=device)) # (T, C)
     x = token_embedding + positional_embedding
     x = self.self_attention_heads(x) # (B, T, C)
+    x = self.feed_forward_network(x)
     logits = self.lm_head(x) # (B, T, vocab_size)
 
     if targets is None:
@@ -219,7 +249,7 @@ model = BigramLM(vocab_size=vocab_size)
 model.to(device)
 
 
-# In[108]:
+# In[145]:
 
 
 learning_rate = 1e-3
@@ -243,7 +273,7 @@ for iter in range(max_iters):
   optimizer.step()
 
 
-# In[109]:
+# In[146]:
 
 
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
@@ -253,7 +283,7 @@ response = decode(raw_response)
 print(f"Response: {response}")
 
 
-# In[110]:
+# In[147]:
 
 
 # self-attention
@@ -281,7 +311,7 @@ out.shape
 weight[0]
 
 
-# In[111]:
+# In[148]:
 
 
 k = torch.randn(B, T, head_size)

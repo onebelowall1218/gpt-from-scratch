@@ -98,7 +98,7 @@ x
 y
 
 
-# In[144]:
+# In[189]:
 
 
 import torch.nn as nn
@@ -107,12 +107,13 @@ from torch.nn import functional as F
 
 class Head(nn.Module):
   """ A single head of the self attention model"""
-  def __init__(self, context_size=8, n_embd=32, head_size=64):
+  def __init__(self, context_size=8, n_embd=32, head_size=64, dropout=0.2):
     super().__init__()
     self.key = nn.Linear(n_embd, head_size, bias=False)
     self.query = nn.Linear(n_embd, head_size, bias=False)
     self.value = nn.Linear(n_embd, head_size, bias=False)
     self.register_buffer('tril', torch.tril(torch.ones(context_size, context_size)))
+    self.dropout = nn.Dropout(dropout)
 
   def forward(self, x):
     B, T, C = x.shape
@@ -122,6 +123,7 @@ class Head(nn.Module):
     weight = q @ k.transpose(-2, -1) * (k.size(-1) ** -0.5)
     weight = weight.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
     weight = F.softmax(weight, dim=-1)
+    weight = self.dropout(weight)
     # perform the weighted aggregation of values
     v = self.value(x)
 
@@ -131,49 +133,64 @@ class Head(nn.Module):
 
 class MultiHeadAttention(nn.Module):
   """Multiple blocks of the self-attention blocks"""
-  def __init__(self, n_heads, context_size=8, n_embd=32, head_size=64):
+  def __init__(self, n_heads, context_size=8, n_embd=32, head_size=64, dropout=0.2):
     super().__init__()
     self.heads = nn.ModuleList([Head(context_size, n_embd, head_size) for _ in range(n_heads)])
+    self.proj = nn.Linear(n_embd, n_embd)
+    self.dropout = nn.Dropout(dropout)
 
   def forward(self, x):
-    return torch.cat([h(x) for h in self.heads], dim=-1)
+    out = torch.cat([h(x) for h in self.heads], dim=-1)
+    out = self.dropout(out)
+    return self.proj(out)
 
 class FeedForward(nn.Module):
   """A single layer of feed forward network"""
-  def __init__(self, n_embd):
+  def __init__(self, n_embd, dropout=0.2):
     super().__init__()
     self.net = nn.Sequential(
-      nn.Linear(n_embd, n_embd),
+      nn.Linear(n_embd, 4 * n_embd),
       nn.ReLU(),
+      nn.Linear(4 * n_embd, n_embd),
+      nn.Dropout(dropout)
     )
 
   def forward(self, x):
     return self.net(x)
 
 class Block(nn.Module):
-  """A single block of the transformer"""
-  def __init__(self, context_size, n_embd):
-    super().__init__()
 
-    self.self_attention_heads = MultiHeadAttention(
-      4,
-      context_size,
-      n_embd,
-      n_embd//4
-    )
-    self.feed_forward_network = FeedForward(n_embd)
+    def __init__(self, context_size, n_embd):
+        super().__init__()
 
-  def forward(self, x):
-    x = self.self_attention_heads(x)
-    x = self.feed_forward_network(x)
-    return x
+        self.sa = MultiHeadAttention(
+            4,
+            context_size,
+            n_embd,
+            n_embd // 4
+        )
+
+        self.ffwd = FeedForward(n_embd)
+
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
+
+    def forward(self, x):
+        x = x + self.sa(self.ln1(x))
+        x = x + self.ffwd(self.ln2(x))
+        return x
 
 class MultiLayer(nn.Module):
 
   def __init__(self, n_layers, vocab_size, context_size=8, n_embd=32):
     super().__init__()
 
-    self.layers = nn.Sequential(*[Block(context_size, n_embd) for _ in range(n_layers)])
+    self.layers = nn.Sequential(
+      Block(context_size, n_embd),
+      Block(context_size, n_embd),
+      Block(context_size, n_embd),
+      nn.LayerNorm(n_embd),
+    )
 
   def forward(self, x):
     return self.layers(x)
@@ -188,9 +205,7 @@ class BigramLM(nn.Module):
 
     self.token_embedding_table = nn.Embedding(vocab_size, embed_dim)
     self.position_embedding_table = nn.Embedding(context_size, embed_dim)
-    self.self_attention_heads = MultiHeadAttention(4, context_size, embed_dim, embed_dim//4)
-    self.feed_forward_network = FeedForward(embed_dim)
-    # self.multi_layer_blocks = MultiLayer(4, vocab_size, context_size, embed_dim)
+    self.multi_layer_blocks = MultiLayer(4, vocab_size, context_size, embed_dim)
     self.lm_head = nn.Linear(embed_dim, vocab_size)
 
   def forward(self, idx, targets=None):
@@ -199,8 +214,7 @@ class BigramLM(nn.Module):
     token_embedding = self.token_embedding_table(idx) # (B, T, C)
     positional_embedding = self.position_embedding_table(torch.arange(T, device=device)) # (T, C)
     x = token_embedding + positional_embedding
-    x = self.self_attention_heads(x) # (B, T, C)
-    x = self.feed_forward_network(x)
+    x = self.multi_layer_blocks(x)
     logits = self.lm_head(x) # (B, T, vocab_size)
 
     if targets is None:
@@ -249,7 +263,7 @@ model = BigramLM(vocab_size=vocab_size)
 model.to(device)
 
 
-# In[145]:
+# In[190]:
 
 
 learning_rate = 1e-3
@@ -266,14 +280,35 @@ for iter in range(max_iters):
     else:
       print(f"No validation set, so no validation loss.")
 
-  xb, yb = get_batch(data=data)
+  xb, yb = get_batch(data=train)
   logits, loss = model(xb, yb)
   optimizer.zero_grad(set_to_none=True)
   loss.backward()
   optimizer.step()
 
 
-# In[146]:
+# In[193]:
+
+
+max_iters = 5000
+eval_interval = 500
+
+for iter in range(max_iters):
+  if iter % eval_interval == 0:
+    losses = estimate_loss(model)
+    if isinstance(losses, dict):
+      print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']: .4f}")
+    else:
+      print(f"No validation set, so no validation loss.")
+
+  xb, yb = get_batch(data=train)
+  logits, loss = model(xb, yb)
+  optimizer.zero_grad(set_to_none=True)
+  loss.backward()
+  optimizer.step()
+
+
+# In[196]:
 
 
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
